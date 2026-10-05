@@ -45,9 +45,11 @@ const SNAP_CLASS: &[u16] = &[
 ];
 const SUBCLASS_ID: usize = 1;
 
+type SnapEmitter = Arc<dyn Fn(&str, bool) + Send + Sync>;
+
 struct Entry {
     overlay: isize,
-    emit: Arc<dyn Fn(&str, bool) + Send + Sync>,
+    emit: SnapEmitter,
     geometry: Geometry,
     hovering: bool,
     pressing: bool,
@@ -339,29 +341,29 @@ unsafe extern "system" fn overlay_proc(
                 return 0;
             }
             WM_NCMOUSELEAVE => {
-                if let Some(parent) = parent_for_overlay(hwnd) {
-                    if let Some(entry) = registry().lock().unwrap().get_mut(&parent) {
-                        entry.hovering = false;
-                        entry.pressing = false;
-                    }
+                if let Some(parent) = parent_for_overlay(hwnd)
+                    && let Some(entry) = registry().lock().unwrap().get_mut(&parent)
+                {
+                    entry.hovering = false;
+                    entry.pressing = false;
                 }
                 emit_snap_event(hwnd, "snap-hover", false);
                 return 0;
             }
             WM_NCLBUTTONDOWN => {
-                if let Some(parent) = parent_for_overlay(hwnd) {
-                    if let Some(entry) = registry().lock().unwrap().get_mut(&parent) {
-                        entry.pressing = true;
-                    }
+                if let Some(parent) = parent_for_overlay(hwnd)
+                    && let Some(entry) = registry().lock().unwrap().get_mut(&parent)
+                {
+                    entry.pressing = true;
                 }
                 emit_snap_event(hwnd, "snap-press", true);
                 return 0;
             }
             WM_NCLBUTTONUP => {
-                if let Some(parent) = parent_for_overlay(hwnd) {
-                    if let Some(entry) = registry().lock().unwrap().get_mut(&parent) {
-                        entry.pressing = false;
-                    }
+                if let Some(parent) = parent_for_overlay(hwnd)
+                    && let Some(entry) = registry().lock().unwrap().get_mut(&parent)
+                {
+                    entry.pressing = false;
                 }
                 emit_snap_event(hwnd, "snap-press", false);
                 return 0;

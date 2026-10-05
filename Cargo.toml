@@ -1,6 +1,6 @@
 [package]
 name = "tauri-plugin-window-integration"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Nick Logozzo <nlogozzo225@gmail.com>"]
 edition = "2024"
 build = "build.rs"
