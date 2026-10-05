@@ -1,0 +1,53 @@
+[package]
+name = "tauri-plugin-window-integration"
+version = "0.1.0"
+authors = ["Nick Logozzo <nlogozzo225@gmail.com>"]
+edition = "2024"
+build = "build.rs"
+links = "tauri-plugin-window-integration"
+readme = "README.md"
+license = "MIT"
+description = "Native window-chrome integration (accent color, vibrancy, Windows 11 snap layout, Linux titlebar buttons) for Tauri 2 desktop apps."
+repository = "https://github.com/NickvisionApps/tauri-plugin-window-integration"
+keywords = ["tauri-plugin", "window", "vibrancy", "titlebar"]
+categories = ["gui", "os"]
+exclude = ["/guest-js"]
+
+[package.metadata.platforms.support]
+windows = { level = "full" }
+linux = { level = "full" }
+macos = { level = "full" }
+android = { level = "none" }
+ios = { level = "none" }
+
+[lib]
+name = "tauri_plugin_window_integration"
+
+[build-dependencies]
+tauri-plugin = { version = "2.5", features = ["build"] }
+
+[dependencies]
+tauri = "2"
+window-vibrancy = "0.8"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+base64 = "0.22"
+directories = "6.0"
+gtk = "0.18"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSColor", "NSColorSpace"] }
+tauri = { version = "2", features = ["macos-private-api"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+raw-window-handle = "0.6"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }

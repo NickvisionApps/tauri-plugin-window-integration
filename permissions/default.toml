@@ -1,0 +1,10 @@
+[default]
+description = "Allows reading OS window-chrome state (accent color, Linux titlebar button layout/icons) and applying platform window-chrome effects (Windows vibrancy, Windows snap-layout geometry)."
+permissions = [
+    "allow-clear-snap-geometry",
+    "allow-get-accent-color",
+    "allow-get-button-layout",
+    "allow-get-titlebar-icons",
+    "allow-update-snap-geometry",
+    "allow-update-vibrancy",
+]

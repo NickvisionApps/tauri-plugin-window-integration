@@ -1,0 +1,15 @@
+# Rust
+/target
+
+# Node
+guest-js/node_modules
+guest-js/dist-js
+
+# macOS
+.DS_Store
+
+# IDEs
+.idea/
+.vscode/
+.vs/
+.claude/
