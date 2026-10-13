@@ -65,6 +65,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: "cargo publish --dry-run"
         run: cargo publish --dry-run
+  versions:
+    name: "version consistency"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: "Compare crate and npm package versions"
+        run: |
+          crate_version=$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f2)
+          npm_version=$(node -p "require('./guest-js/package.json').version")
+          if [ "$crate_version" != "$npm_version" ]; then
+            echo "Cargo.toml ($crate_version) and guest-js/package.json ($npm_version) versions differ"
+            exit 1
+          fi
   guest-js:
     name: "guest-js"
     runs-on: ubuntu-latest

@@ -4,12 +4,12 @@ Native window-chrome integration for Tauri 2 desktop apps: OS accent color, wind
 
 ## Commands
 
-Platform-specific commands only exist (compile and get registered) on their own platform — calling one from the wrong platform fails with Tauri's standard "command not found" IPC error. Use the `@nickvisionapps/plugin-window-integration` JS bindings instead of raw `invoke()` where possible; they check the platform for you and resolve to a harmless default on unsupported platforms, so client code never needs its own platform checks.
+Every command is registered on every platform. Commands that don't apply to the current platform are harmless no-ops that resolve to `null` (or nothing), so client code never needs its own platform checks.
 
 | Invoke string | Platform | Description |
 | --- | --- | --- |
 | `plugin:window-integration\|get_accent_color` | macOS, Windows, Linux | Returns the current OS accent color as `#rrggbb`, or `null`. |
-| `plugin:window-integration\|update_vibrancy` | Windows only | Applies mica/acrylic/blur vibrancy for the given `dark` flag. |
+| `plugin:window-integration\|update_vibrancy` | Windows only | Applies Mica (falling back to blur on systems without Mica) for the given `dark` flag, and returns an error if no effect could be applied. |
 | `plugin:window-integration\|get_button_layout` | Linux only | Returns the desktop's titlebar button order (GTK, falling back to KDE), or `null`. |
 | `plugin:window-integration\|get_titlebar_icons` | Linux only | Returns a map of titlebar button icons as base64 data URIs, or `null`. |
 | `plugin:window-integration\|update_snap_geometry` | Windows only | Registers/updates the on-screen geometry of a custom maximize button so Windows 11's snap-layout flyout appears over it. |
@@ -17,7 +17,7 @@ Platform-specific commands only exist (compile and get registered) on their own 
 
 macOS vibrancy is applied automatically to every window as it's created — no setup call needed. Windows vibrancy doesn't self-track light/dark, so call `update_vibrancy` whenever your app's resolved theme changes.
 
-The Windows snap-overlay also emits plain (unnamespaced) `snap-hover`/`snap-press` boolean events on the window while the maximize button is hovered/pressed — harmless to listen for on any platform, since they simply never fire outside Windows.
+The Windows snap-overlay also emits `plugin:window-integration:snap-hover` / `plugin:window-integration:snap-press` boolean events, targeted only at the window that owns the maximize button, while it is hovered/pressed. They never fire outside Windows. The overlay stays anchored to the window's top-right edge across resizes and DPI changes.
 
 ## Required consumer setup
 

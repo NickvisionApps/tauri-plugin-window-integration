@@ -1,7 +1,7 @@
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError},
 };
 use tauri::{Emitter, Runtime, WebviewWindow};
 use windows_sys::Win32::{
@@ -25,24 +25,17 @@ const MAX_CONTROL_BAND_LOGICAL: u64 = 640;
 const MAX_MAXIMIZE_HEIGHT_LOGICAL: u64 = 128;
 const MAX_MAXIMIZE_WIDTH_LOGICAL: u64 = 256;
 const MAX_TITLEBAR_BAND_LOGICAL: u64 = 128;
-const SNAP_CLASS: &[u16] = &[
-    b'A' as u16,
-    b'p' as u16,
-    b'p' as u16,
-    b'l' as u16,
-    b'i' as u16,
-    b'c' as u16,
-    b'a' as u16,
-    b't' as u16,
-    b'i' as u16,
-    b'o' as u16,
-    b'n' as u16,
-    b'S' as u16,
-    b'n' as u16,
-    b'a' as u16,
-    b'p' as u16,
-    0,
-];
+const SNAP_CLASS_NAME: &str = "TauriPluginWindowIntegrationSnapOverlay";
+const SNAP_CLASS: [u16; SNAP_CLASS_NAME.len() + 1] = {
+    let mut class = [0u16; SNAP_CLASS_NAME.len() + 1];
+    let bytes = SNAP_CLASS_NAME.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        class[index] = bytes[index] as u16;
+        index += 1;
+    }
+    class
+};
 const SUBCLASS_ID: usize = 1;
 
 type SnapEmitter = Arc<dyn Fn(&str, bool) + Send + Sync>;
@@ -57,14 +50,16 @@ struct Entry {
 
 #[derive(Clone, Copy)]
 struct Geometry {
-    x: i32,
+    right_inset: i32,
     y: i32,
     width: u32,
     height: u32,
+    dpi: u32,
 }
 
 pub fn accent_color() -> Option<String> {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::Graphics::Dwm::DwmGetColorizationColor;
     use windows_sys::Win32::System::Registry::{
         HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
     };
@@ -77,44 +72,55 @@ pub fn accent_color() -> Option<String> {
         let subkey = wide("Software\\Microsoft\\Windows\\DWM");
         let mut hkey: HKEY = std::mem::zeroed();
         if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut hkey)
-            != ERROR_SUCCESS
+            == ERROR_SUCCESS
         {
+            let value_name = wide("AccentColor");
+            let mut data: u32 = 0;
+            let mut data_len: u32 = size_of::<u32>() as u32;
+            let mut value_type: u32 = 0;
+            let status = RegQueryValueExW(
+                hkey,
+                value_name.as_ptr(),
+                std::ptr::null_mut(),
+                &mut value_type,
+                &mut data as *mut u32 as *mut u8,
+                &mut data_len,
+            );
+            RegCloseKey(hkey);
+            if status == ERROR_SUCCESS && value_type == REG_DWORD {
+                let r = (data & 0xFF) as u8;
+                let g = ((data >> 8) & 0xFF) as u8;
+                let b = ((data >> 16) & 0xFF) as u8;
+                return Some(format!("#{r:02x}{g:02x}{b:02x}"));
+            }
+        }
+        let mut colorization: u32 = 0;
+        let mut opaque_blend = 0;
+        if DwmGetColorizationColor(&mut colorization, &mut opaque_blend) < 0 {
             return None;
         }
-        let value_name = wide("AccentColor");
-        let mut data: u32 = 0;
-        let mut data_len: u32 = size_of::<u32>() as u32;
-        let mut value_type: u32 = 0;
-        let status = RegQueryValueExW(
-            hkey,
-            value_name.as_ptr(),
-            std::ptr::null_mut(),
-            &mut value_type,
-            &mut data as *mut u32 as *mut u8,
-            &mut data_len,
-        );
-        RegCloseKey(hkey);
-        if status != ERROR_SUCCESS || value_type != REG_DWORD {
-            return None;
-        }
-        let r = (data & 0xFF) as u8;
-        let g = ((data >> 8) & 0xFF) as u8;
-        let b = ((data >> 16) & 0xFF) as u8;
+        let r = ((colorization >> 16) & 0xFF) as u8;
+        let g = ((colorization >> 8) & 0xFF) as u8;
+        let b = (colorization & 0xFF) as u8;
         Some(format!("#{r:02x}{g:02x}{b:02x}"))
     }
 }
 
-pub fn apply_window_vibrancy<R: Runtime>(window: &WebviewWindow<R>, dark: bool) {
-    if window_vibrancy::apply_mica(window, Some(dark)).is_err() {
-        let tint = if dark {
-            (20, 20, 20, 160)
-        } else {
-            (240, 240, 240, 160)
-        };
-        if window_vibrancy::apply_acrylic(window, Some(tint)).is_err() {
-            let _ = window_vibrancy::apply_blur(window, Some(tint));
-        }
-    }
+pub fn apply_window_vibrancy<R: Runtime>(
+    window: &WebviewWindow<R>,
+    dark: bool,
+) -> Result<(), String> {
+    let mica_error = match window_vibrancy::apply_mica(window, Some(dark)) {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    let tint = if dark {
+        (20, 20, 20, 160)
+    } else {
+        (240, 240, 240, 160)
+    };
+    window_vibrancy::apply_blur(window, Some(tint))
+        .map_err(|blur_error| format!("mica failed ({mica_error}); blur failed ({blur_error})"))
 }
 
 pub fn install_or_update_snap_layout<R: Runtime>(
@@ -127,13 +133,7 @@ pub fn install_or_update_snap_layout<R: Runtime>(
     control_band_width: u32,
 ) -> Result<(), String> {
     let hwnd = window_hwnd(window)?;
-    let geometry = Geometry {
-        x,
-        y,
-        width,
-        height,
-    };
-    if geometry.width == 0 || geometry.height == 0 || geometry.x < 0 || geometry.y < 0 {
+    if width == 0 || height == 0 || x < 0 || y < 0 {
         return Err(
             "snap maximize-button geometry must be a non-empty client rectangle".to_string(),
         );
@@ -145,10 +145,8 @@ pub fn install_or_update_snap_layout<R: Runtime>(
             std::io::Error::last_os_error()
         ));
     }
-    let right = i64::from(geometry.x) + i64::from(geometry.width);
-    if right > i64::from(rect.right)
-        || i64::from(geometry.y) + i64::from(geometry.height) > i64::from(rect.bottom)
-    {
+    let right = i64::from(x) + i64::from(width);
+    if right > i64::from(rect.right) || i64::from(y) + i64::from(height) > i64::from(rect.bottom) {
         return Err(
             "snap maximize-button geometry lies outside the window client area".to_string(),
         );
@@ -160,6 +158,13 @@ pub fn install_or_update_snap_layout<R: Runtime>(
             std::io::Error::last_os_error()
         ));
     }
+    let geometry = Geometry {
+        right_inset: (i64::from(rect.right) - right) as i32,
+        y,
+        width,
+        height,
+        dpi,
+    };
     let logical = |value: u64| value.saturating_mul(96).div_ceil(u64::from(dpi));
     if logical(u64::from(titlebar_height)) == 0
         || logical(u64::from(titlebar_height)) > MAX_TITLEBAR_BAND_LOGICAL
@@ -184,14 +189,11 @@ pub fn install_or_update_snap_layout<R: Runtime>(
                 .to_string(),
         );
     }
-    if registry().lock().unwrap().contains_key(&hwnd) {
-        {
-            let mut state = registry().lock().unwrap();
-            let Some(entry) = state.get_mut(&hwnd) else {
-                return Err("no snap overlay is installed for this window".to_string());
-            };
-            entry.geometry = geometry;
-        }
+    let installed = registry()
+        .get_mut(&hwnd)
+        .map(|entry| entry.geometry = geometry)
+        .is_some();
+    if installed {
         return update_overlay_position(hwnd);
     }
     static REGISTRATION: OnceLock<Result<isize, String>> = OnceLock::new();
@@ -257,12 +259,12 @@ pub fn install_or_update_snap_layout<R: Runtime>(
         return Err("SetWindowSubclass failed for the snap overlay".to_string());
     }
     let window = window.clone();
-    registry().lock().unwrap().insert(
+    registry().insert(
         hwnd,
         Entry {
             overlay: overlay as isize,
             emit: Arc::new(move |event: &str, value: bool| {
-                let _ = window.emit(event, value);
+                let _ = window.emit_to(window.label(), event, value);
             }),
             geometry,
             hovering: false,
@@ -274,7 +276,7 @@ pub fn install_or_update_snap_layout<R: Runtime>(
 
 pub fn uninstall_snap_layout<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), String> {
     let hwnd = window_hwnd(window)?;
-    let Some(entry) = registry().lock().unwrap().remove(&hwnd) else {
+    let Some(entry) = registry().remove(&hwnd) else {
         return Ok(());
     };
     unsafe {
@@ -286,13 +288,9 @@ pub fn uninstall_snap_layout<R: Runtime>(window: &WebviewWindow<R>) -> Result<()
 }
 
 fn emit_snap_event(hwnd: HWND, event: &str, value: bool) {
-    let Some(emit) = parent_for_overlay(hwnd).and_then(|parent| {
-        registry()
-            .lock()
-            .unwrap()
-            .get(&parent)
-            .map(|entry| entry.emit.clone())
-    }) else {
+    let Some(emit) = parent_for_overlay(hwnd)
+        .and_then(|parent| registry().get(&parent).map(|entry| entry.emit.clone()))
+    else {
         return;
     };
     emit(event, value);
@@ -308,8 +306,6 @@ unsafe extern "system" fn overlay_proc(
         match msg {
             WM_NCHITTEST
                 if registry()
-                    .lock()
-                    .unwrap()
                     .values()
                     .any(|entry| entry.overlay == hwnd as isize) =>
             {
@@ -320,7 +316,7 @@ unsafe extern "system" fn overlay_proc(
                     return 0;
                 };
                 let entered = {
-                    let mut state = registry().lock().unwrap();
+                    let mut state = registry();
                     let Some(entry) = state.get_mut(&parent) else {
                         return 0;
                     };
@@ -329,7 +325,7 @@ unsafe extern "system" fn overlay_proc(
                     entered
                 };
                 if entered {
-                    emit_snap_event(hwnd, "snap-hover", true);
+                    emit_snap_event(hwnd, "plugin:window-integration:snap-hover", true);
                     let mut track = TRACKMOUSEEVENT {
                         cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
                         dwFlags: TME_LEAVE | TME_NONCLIENT,
@@ -342,35 +338,35 @@ unsafe extern "system" fn overlay_proc(
             }
             WM_NCMOUSELEAVE => {
                 if let Some(parent) = parent_for_overlay(hwnd)
-                    && let Some(entry) = registry().lock().unwrap().get_mut(&parent)
+                    && let Some(entry) = registry().get_mut(&parent)
                 {
                     entry.hovering = false;
                     entry.pressing = false;
                 }
-                emit_snap_event(hwnd, "snap-hover", false);
+                emit_snap_event(hwnd, "plugin:window-integration:snap-hover", false);
                 return 0;
             }
             WM_NCLBUTTONDOWN => {
                 if let Some(parent) = parent_for_overlay(hwnd)
-                    && let Some(entry) = registry().lock().unwrap().get_mut(&parent)
+                    && let Some(entry) = registry().get_mut(&parent)
                 {
                     entry.pressing = true;
                 }
-                emit_snap_event(hwnd, "snap-press", true);
+                emit_snap_event(hwnd, "plugin:window-integration:snap-press", true);
                 return 0;
             }
             WM_NCLBUTTONUP => {
                 if let Some(parent) = parent_for_overlay(hwnd)
-                    && let Some(entry) = registry().lock().unwrap().get_mut(&parent)
+                    && let Some(entry) = registry().get_mut(&parent)
                 {
                     entry.pressing = false;
                 }
-                emit_snap_event(hwnd, "snap-press", false);
+                emit_snap_event(hwnd, "plugin:window-integration:snap-press", false);
                 return 0;
             }
             WM_NCDESTROY => {
                 if let Some(parent) = parent_for_overlay(hwnd) {
-                    registry().lock().unwrap().remove(&parent);
+                    registry().remove(&parent);
                 }
             }
             _ => {}
@@ -382,8 +378,6 @@ unsafe extern "system" fn overlay_proc(
 
 fn parent_for_overlay(overlay: HWND) -> Option<isize> {
     registry()
-        .lock()
-        .unwrap()
         .iter()
         .find_map(|(parent, entry)| (entry.overlay == overlay as isize).then_some(*parent))
 }
@@ -398,41 +392,70 @@ unsafe extern "system" fn parent_subclass_proc(
 ) -> LRESULT {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         match msg {
-            WM_SIZE | WM_DPICHANGED => {
-                if let Some(entry) = registry().lock().unwrap().get(&(hwnd as isize)) {
-                    unsafe { ShowWindow(entry.overlay as HWND, SW_HIDE) };
+            WM_DPICHANGED => {
+                let new_dpi = (wparam & 0xFFFF) as u32;
+                if let Some(entry) = registry().get_mut(&(hwnd as isize))
+                    && new_dpi != 0
+                    && entry.geometry.dpi != 0
+                {
+                    let old_dpi = i64::from(entry.geometry.dpi);
+                    let scale = |value: i64| (value * i64::from(new_dpi) + old_dpi / 2) / old_dpi;
+                    entry.geometry = Geometry {
+                        right_inset: scale(i64::from(entry.geometry.right_inset)) as i32,
+                        y: scale(i64::from(entry.geometry.y)) as i32,
+                        width: scale(i64::from(entry.geometry.width)) as u32,
+                        height: scale(i64::from(entry.geometry.height)) as u32,
+                        dpi: new_dpi,
+                    };
                 }
             }
             WM_NCDESTROY => {
-                registry().lock().unwrap().remove(&(hwnd as isize));
+                registry().remove(&(hwnd as isize));
                 unsafe { RemoveWindowSubclass(hwnd, Some(parent_subclass_proc), SUBCLASS_ID) };
             }
             _ => {}
         }
-        unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+        let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
+        if matches!(msg, WM_SIZE | WM_DPICHANGED) {
+            let _ = update_overlay_position(hwnd as isize);
+        }
+        result
     }))
     .unwrap_or_else(|_| unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) })
 }
 
-fn registry() -> &'static Mutex<HashMap<isize, Entry>> {
+fn registry() -> MutexGuard<'static, HashMap<isize, Entry>> {
     static REGISTRY: OnceLock<Mutex<HashMap<isize, Entry>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+    REGISTRY
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
 }
 
 fn update_overlay_position(hwnd: isize) -> Result<(), String> {
     let Some((overlay, geometry)) = registry()
-        .lock()
-        .unwrap()
         .get(&hwnd)
         .map(|entry| (entry.overlay, entry.geometry))
     else {
         return Ok(());
     };
+    let mut rect = unsafe { std::mem::zeroed() };
+    if unsafe { GetClientRect(hwnd as HWND, &mut rect) } == 0 {
+        return Err(format!(
+            "GetClientRect failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let x = rect.right - geometry.right_inset - geometry.width as i32;
+    if x < 0 || rect.bottom < geometry.y + geometry.height as i32 {
+        unsafe { ShowWindow(overlay as HWND, SW_HIDE) };
+        return Ok(());
+    }
     if unsafe {
         SetWindowPos(
             overlay as HWND,
             HWND_TOP,
-            geometry.x,
+            x,
             geometry.y,
             geometry.width as i32,
             geometry.height as i32,

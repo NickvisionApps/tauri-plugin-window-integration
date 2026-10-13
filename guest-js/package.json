@@ -1,6 +1,6 @@
 {
   "name": "@nickvisionapps/plugin-window-integration",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "JS/TS bindings for the tauri-plugin-window-integration Tauri plugin.",
   "license": "MIT",
   "type": "module",
@@ -28,8 +28,7 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-os": "^2"
+    "@tauri-apps/api": "^2"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -42,5 +41,17 @@
     "tslib": "^2.8.1",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.70.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NickvisionApps/tauri-plugin-window-integration.git",
+    "directory": "guest-js"
+  },
+  "author": "Nick Logozzo",
+  "keywords": [
+    "tauri-plugin",
+    "window",
+    "vibrancy",
+    "titlebar"
+  ]
 }
